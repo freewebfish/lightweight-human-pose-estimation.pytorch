@@ -1,5 +1,5 @@
 import argparse
-
+import math
 import cv2
 import numpy as np
 import torch
@@ -39,7 +39,7 @@ class VideoReader(object):
             pass
 
     def __iter__(self):
-        self.cap = cv2.VideoCapture(self.file_name)
+        self.cap = cv2.VideoCapture(self.file_name, cv2.CAP_DSHOW)
         if not self.cap.isOpened():
             raise IOError('Video {} cannot be opened'.format(self.file_name))
         return self
@@ -88,7 +88,12 @@ def run_demo(net, image_provider, height_size, cpu, track, smooth):
     num_keypoints = Pose.num_kpts
     previous_poses = []
     delay = 1
+    mean_time = 0
+    video_time = 0    
+    prep_displacement = 0
+    prep_time = 0
     for img in image_provider:
+        tik1 = cv2.getTickCount()
         orig_img = img.copy()
         heatmaps, pafs, scale, pad = infer_fast(net, img, height_size, stride, upsample_ratio, cpu)
 
@@ -111,21 +116,44 @@ def run_demo(net, image_provider, height_size, cpu, track, smooth):
                     pose_keypoints[kpt_id, 0] = int(all_keypoints[int(pose_entries[n][kpt_id]), 0])
                     pose_keypoints[kpt_id, 1] = int(all_keypoints[int(pose_entries[n][kpt_id]), 1])
             pose = Pose(pose_keypoints, pose_entries[n][18])
-            current_poses.append(pose)
+            if (pose.bbox[0]+pose.bbox[2]/2 > 355 and (pose.bbox[0]+pose.bbox[2]/2 < 555)) :
+                current_poses.append(pose)
 
         if track:
             track_poses(previous_poses, current_poses, smooth=smooth)
-            previous_poses = current_poses
         for pose in current_poses:
             pose.draw(img)
         img = cv2.addWeighted(orig_img, 0.6, img, 0.4, 0)
+        cv2.rectangle(img, (330, 330), (430, 230), (0, 0, 255), 2)
+        prev_pose = []
         for pose in current_poses:
-            cv2.rectangle(img, (pose.bbox[0], pose.bbox[1]),
-                          (pose.bbox[0] + pose.bbox[2], pose.bbox[1] + pose.bbox[3]), (0, 255, 0))
             if track:
+                cv2.rectangle(img, (pose.bbox[0], pose.bbox[1]),
+                          (pose.bbox[0] + pose.bbox[2], pose.bbox[1] + pose.bbox[3]), (0, 255, 0))
                 cv2.putText(img, 'id: {}'.format(pose.id), (pose.bbox[0], pose.bbox[1] - 16),
                             cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 0, 255))
-        cv2.imshow('Lightweight Human Pose Estimation Python Demo', img)
+            if (pose.keypoints[4][0] > 330 and pose.keypoints[4][0] < 430) and (pose.keypoints[4][1] > 230 and pose.keypoints[4][1] < 330) and \
+               (pose.keypoints[7][0] > 330 and pose.keypoints[7][0] < 430) and (pose.keypoints[7][1] > 230 and pose.keypoints[7][1] < 330): 
+                cv2.rectangle(img,(pose.keypoints[4][0]-10,pose.keypoints[4][1]-10),(pose.keypoints[4][0]+10,pose.keypoints[4][1]+10),(0, 255, 0), 2)
+                cv2.rectangle(img, (pose.keypoints[7][0]-10,pose.keypoints[7][1]-10),(pose.keypoints[7][0]+10,pose.keypoints[7][1]+10),(0, 255, 0), 2)
+                if bool(previous_poses):
+                    prev_pose = previous_poses[0]
+                    prep_displacement += ((pose.keypoints[4][0] - prev_pose.keypoints[4][0])**2+(pose.keypoints[4][1] - prev_pose.keypoints[4][1])**2)**0.5
+                    prep_displacement += ((pose.keypoints[7][0] - prev_pose.keypoints[7][0])**2+(pose.keypoints[7][1] - prev_pose.keypoints[7][1])**2)**0.5                
+                prep_time += (cv2.getTickCount() - tik1) / cv2.getTickFrequency()                    
+        previous_poses = current_poses
+        current_time = (cv2.getTickCount() - tik1) / cv2.getTickFrequency()
+        video_time += current_time
+        cv2.putText(img, "displacement: %d" % int(prep_displacement), (20, 20), cv2.FONT_HERSHEY_COMPLEX, 0.6, (0, 0, 255), 1)
+        cv2.putText(img, "prep time (s): %.1f" % (prep_time/2), (20, 40), cv2.FONT_HERSHEY_COMPLEX, 0.6, (0, 0, 255), 1)
+        cv2.putText(img, "video time (s): %.1f" % (video_time/2), (20, 60), cv2.FONT_HERSHEY_COMPLEX, 0.6, (0, 0, 255), 1)        
+        if mean_time == 0:
+            mean_time = current_time
+        else:
+            mean_time = mean_time * 0.95 + current_time * 0.05
+        #cv2.putText(img, 'FPS: {}'.format(int(1 / mean_time * 10) / 10),
+        #            (40, 80), cv2.FONT_HERSHEY_COMPLEX, 1, (0, 0, 255))
+        cv2.imshow('Chicken Prep Test Demo', img)
         key = cv2.waitKey(delay)
         if key == 27:  # esc
             return
@@ -135,6 +163,8 @@ def run_demo(net, image_provider, height_size, cpu, track, smooth):
             else:
                 delay = 1
 
+
+# python demo.py --checkpoint-path checkpoint_iter_370000.pth --height-size 256 --video 0
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
